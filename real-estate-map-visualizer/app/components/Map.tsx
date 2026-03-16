@@ -28,8 +28,18 @@ const LOCATIONS = [
   },
 ];
 
+interface Location {
+  id: number;
+  longitude: number;
+  latitude: number;
+  title: string;
+  description: string;
+}
+
 export default function MapComponent() {
-  const [selectedLocation, setSelectedLocation] = useState(null);
+  const [selectedLocation, setSelectedLocation] = useState<Location | null>(
+    null,
+  );
 
   return (
     <Map
