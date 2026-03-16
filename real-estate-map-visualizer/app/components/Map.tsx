@@ -33,7 +33,7 @@ export default function MapComponent() {
 
   return (
     <Map
-      mapboxAccessToken="pk.eyJ1Ijoic3ZheXNlciIsImEiOiJjbGgwbzl5NXcwdmMzM2VwdTkya2J6cDVmIn0.VrQewCt9w1K8QPsLzuDZjg"
+      mapboxAccessToken={process.env.NEXT_PUBLIC_MAPBOX_TOKEN}
       initialViewState={{ longitude: -100, latitude: 40, zoom: 3.5 }}
       style={{ width: "100%", height: "100vh" }}
       mapStyle="mapbox://styles/mapbox/streets-v11"
