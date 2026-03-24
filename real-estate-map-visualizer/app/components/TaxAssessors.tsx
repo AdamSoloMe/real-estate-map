@@ -66,7 +66,7 @@ export function TaxAssessors() {
   useEffect(() => {
     if (!mapContainerRef.current) return;
 
-    mapboxgl.accessToken = {process.env.NEXT_PUBLIC_MAPBOX_TOKEN};
+    mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? "";
 
     const map = new mapboxgl.Map({
       container: mapContainerRef.current,
