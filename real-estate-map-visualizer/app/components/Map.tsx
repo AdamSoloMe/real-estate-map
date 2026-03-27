@@ -3,7 +3,8 @@
 // app/components/Map.tsx
 
 import React, { useState } from "react";
-import Map, { Marker, Popup } from "react-map-gl/mapbox";
+import Map, { Marker, Popup, Source, Layer } from "react-map-gl/mapbox";
+import type { FillLayer, LineLayer } from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { useQuery, gql } from "@apollo/client";
 
@@ -39,17 +40,41 @@ const GET_TAX_ASSESSORS = gql`
   }
 `;
 
+// ─── Parcel Layer Styles ───────────────────────────────────────────────────────
+
+const parcelFillLayer: FillLayer = {
+  id: "parcels-fill",
+  type: "fill",
+  source: "parcels",
+  "source-layer": "attom-parcels",
+  paint: {
+    "fill-color": "#4A90D9",
+    "fill-opacity": 0.2,
+  },
+};
+
+const parcelLineLayer: LineLayer = {
+  id: "parcels-line",
+  type: "line",
+  source: "parcels",
+  "source-layer": "attom-parcels",
+  paint: {
+    "line-color": "#2C6FAC",
+    "line-width": 1,
+  },
+};
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function MapComponent() {
   const [selectedProperty, setSelectedProperty] = useState<TaxAssessor | null>(
     null,
   );
+  const [parcelId, setParcelId] = useState<string | null>(null);
 
   const { loading, error, data } =
     useQuery<AttomTaxAssessorsData>(GET_TAX_ASSESSORS);
 
-  // Filter out properties missing coordinates before rendering markers
   const validProperties =
     data?.attomTaxAssessors.items.filter(
       (
@@ -62,11 +87,17 @@ export default function MapComponent() {
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100vh" }}>
-      {/* Loading / error overlays */}
       {loading && <div style={overlayStyle}>Loading properties...</div>}
       {error && (
         <div style={{ ...overlayStyle, color: "#e87d6d" }}>
           Error: {error.message}
+        </div>
+      )}
+
+      {/* Debug: show the last clicked parcel ID */}
+      {parcelId && (
+        <div style={{ ...overlayStyle, top: "auto", bottom: 16 }}>
+          Parcel ID: {parcelId}
         </div>
       )}
 
@@ -75,8 +106,24 @@ export default function MapComponent() {
         initialViewState={{ longitude: -100, latitude: 40, zoom: 3.5 }}
         style={{ width: "100%", height: "100vh" }}
         mapStyle="mapbox://styles/mapbox/streets-v11"
+        interactiveLayerIds={["parcels-fill", "parcels-line"]}
+        onClick={(event) => {
+          if (event.features && event.features.length > 0) {
+            setParcelId(event.features[0].properties?.ID ?? null);
+          }
+        }}
       >
-        {/* Property markers from GraphQL */}
+        {/* ── Parcel boundaries source + layers ── */}
+        <Source
+          id="parcels"
+          type="vector"
+          url="mapbox://svayser.parcel-boundaries"
+        >
+          <Layer {...parcelFillLayer} />
+          <Layer {...parcelLineLayer} />
+        </Source>
+
+        {/* ── Property markers from GraphQL ── */}
         {validProperties.map((property) => (
           <Marker
             key={
@@ -90,7 +137,7 @@ export default function MapComponent() {
           />
         ))}
 
-        {/* Popup for selected property */}
+        {/* ── Popup for selected property ── */}
         {selectedProperty &&
           selectedProperty.PropertyLatitude !== null &&
           selectedProperty.PropertyLongitude !== null && (
