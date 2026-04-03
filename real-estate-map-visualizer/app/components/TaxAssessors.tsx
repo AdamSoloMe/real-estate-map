@@ -1,23 +1,16 @@
+"use client";
+
 /**
  * TaxAssessors.tsx
  * Week 3 — GraphQL as a Client
  *
- * Covers:
- *  - Apollo useQuery with attomTaxAssessors
- *  - Mapbox GL JS map with property markers
- *  - Advanced: Mapbox Terrain vector source + layer
- *
- * Setup before using:
- *  npm install @apollo/client graphql mapbox-gl
- *  npm install -D @types/mapbox-gl
- *
- * Replace YOUR_MAPBOX_TOKEN with your actual token from mapbox.com
+ * Refactored from raw mapbox-gl to react-map-gl.
  */
 
-import { useQuery, gql } from '@apollo/client';
-import { useEffect, useRef, useState, CSSProperties } from 'react';
-import mapboxgl from 'mapbox-gl';
-import 'mapbox-gl/dist/mapbox-gl.css';
+import { useQuery, gql } from "@apollo/client";
+import { useRef, useState, CSSProperties } from "react";
+import Map, { Marker, Popup, MapRef } from "react-map-gl/mapbox";
+import "mapbox-gl/dist/mapbox-gl.css";
 
 // ─── 1. Types ─────────────────────────────────────────────────────────────────
 
@@ -54,139 +47,33 @@ const GET_TAX_ASSESSORS = gql`
 // ─── 3. Main Component ────────────────────────────────────────────────────────
 
 export function TaxAssessors() {
-  const mapContainerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<mapboxgl.Map | null>(null);
-  const markersRef = useRef<mapboxgl.Marker[]>([]);
+  const mapRef = useRef<MapRef>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [popup, setPopup] = useState<TaxAssessor | null>(null);
 
-  // Apollo hook — fires the query, returns reactive { loading, error, data }
-  const { loading, error, data } = useQuery<AttomTaxAssessorsData>(GET_TAX_ASSESSORS);
+  const { loading, error, data } =
+    useQuery<AttomTaxAssessorsData>(GET_TAX_ASSESSORS);
 
-  // ── 3a. Initialize Mapbox map (runs once on mount) ────────────────────────
-  useEffect(() => {
-    if (!mapContainerRef.current) return;
+  const validItems =
+    data?.attomTaxAssessors.items.filter(
+      (
+        item,
+      ): item is TaxAssessor & {
+        PropertyLatitude: number;
+        PropertyLongitude: number;
+      } => item.PropertyLatitude !== null && item.PropertyLongitude !== null,
+    ) ?? [];
 
-    mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? "";
+  // ── Fly to a property when clicked in the sidebar ────────────────────────
 
-    const map = new mapboxgl.Map({
-      container: mapContainerRef.current,
-      style: 'mapbox://styles/mapbox/dark-v11',
-      center: [-74.006, 40.7128], // default: New York City
-      zoom: 10,
-    });
-
-    // Navigation controls (zoom in/out, compass)
-    map.addControl(new mapboxgl.NavigationControl(), 'top-right');
-
-    // ── Advanced: Terrain vector source + layer ───────────────────────────
-    map.on('load', () => {
-      // 1. Add the Mapbox Terrain DEM source
-      map.addSource('mapbox-dem', {
-        type: 'raster-dem',
-        url: 'mapbox://mapbox.mapbox-terrain-dem-v1',
-        tileSize: 512,
-        maxzoom: 14,
-      });
-
-      // 2. Set the terrain on the map using the DEM source
-      map.setTerrain({
-        source: 'mapbox-dem',
-        exaggeration: 1.5, // amplify elevation for visual effect
-      });
-
-      // 3. Add a sky layer so the horizon looks natural with 3D terrain
-      map.addLayer({
-        id: 'sky',
-        type: 'sky',
-        paint: {
-          'sky-type': 'atmosphere',
-          'sky-atmosphere-sun': [0.0, 90.0],
-          'sky-atmosphere-sun-intensity': 15,
-        },
-      });
-    });
-
-    mapRef.current = map;
-
-    // Cleanup on unmount
-    return () => {
-      markersRef.current.forEach((m) => m.remove());
-      map.remove();
-    };
-  }, []);
-
-  // ── 3b. Add property markers once data arrives ────────────────────────────
-  useEffect(() => {
-    if (!data || !mapRef.current) return;
-
-    const map = mapRef.current;
-    const items = data.attomTaxAssessors.items;
-
-    // Remove any existing markers before re-adding
-    markersRef.current.forEach((m) => m.remove());
-    markersRef.current = [];
-
-    // Filter out items missing coordinates
-    const validItems = items.filter(
-      (item): item is TaxAssessor & { PropertyLatitude: number; PropertyLongitude: number } =>
-        item.PropertyLatitude !== null && item.PropertyLongitude !== null
-    );
-
-    // Fit the map to the bounding box of all properties
-    if (validItems.length > 0) {
-      const bounds = new mapboxgl.LngLatBounds();
-      validItems.forEach(({ PropertyLongitude, PropertyLatitude }) => {
-        bounds.extend([PropertyLongitude, PropertyLatitude]);
-      });
-      map.fitBounds(bounds, { padding: 60, maxZoom: 14 });
-    }
-
-    // Create a marker for each property
-    validItems.forEach((item) => {
-      const { PropertyLongitude, PropertyLatitude, PropertyAddressFull, ATTOM_ID } = item;
-
-      // Custom marker element
-      const el = document.createElement('div');
-      el.style.cssText = `
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        background: #e8b86d;
-        border: 2px solid #fff;
-        cursor: pointer;
-        transition: transform 0.15s ease, background 0.15s ease;
-      `;
-
-      el.addEventListener('mouseenter', () => {
-        el.style.transform = 'scale(1.6)';
-        el.style.background = '#f5d08a';
-      });
-      el.addEventListener('mouseleave', () => {
-        el.style.transform = 'scale(1)';
-        el.style.background = ATTOM_ID === selectedId ? '#f5d08a' : '#e8b86d';
-      });
-
-      const popup = new mapboxgl.Popup({ offset: 16, closeButton: false }).setHTML(`
-        <div style="font-family: monospace; font-size: 12px; padding: 4px;">
-          <strong>${PropertyAddressFull ?? 'Unknown address'}</strong><br/>
-          <span style="color: #888;">ATTOM ID: ${ATTOM_ID ?? '—'}</span>
-        </div>
-      `);
-
-      const marker = new mapboxgl.Marker(el)
-        .setLngLat([PropertyLongitude, PropertyLatitude])
-        .setPopup(popup)
-        .addTo(map);
-
-      el.addEventListener('click', () => setSelectedId(ATTOM_ID));
-
-      markersRef.current.push(marker);
-    });
-  }, [data]);
-
-  // ── 3c. Fly to property when selected in sidebar ──────────────────────────
-  const flyToProperty = (item: TaxAssessor): void => {
-    if (!mapRef.current || item.PropertyLatitude === null || item.PropertyLongitude === null) return;
+  const flyToProperty = (item: TaxAssessor) => {
+    if (
+      !mapRef.current ||
+      item.PropertyLatitude === null ||
+      item.PropertyLongitude === null
+    )
+      return;
     setSelectedId(item.ATTOM_ID);
     mapRef.current.flyTo({
       center: [item.PropertyLongitude, item.PropertyLatitude],
@@ -213,7 +100,9 @@ export function TaxAssessors() {
 
         {loading && <p style={styles.status}>Loading...</p>}
         {error && (
-          <p style={{ ...styles.status, color: '#e87d6d' }}>Error: {error.message}</p>
+          <p style={{ ...styles.status, color: "#e87d6d" }}>
+            Error: {error.message}
+          </p>
         )}
 
         {data && (
@@ -223,15 +112,17 @@ export function TaxAssessors() {
                 key={item.ATTOM_ID ?? index}
                 style={{
                   ...styles.listItem,
-                  ...(selectedId === item.ATTOM_ID ? styles.listItemActive : {}),
+                  ...(selectedId === item.ATTOM_ID
+                    ? styles.listItemActive
+                    : {}),
                 }}
                 onClick={() => flyToProperty(item)}
               >
                 <span style={styles.itemAddress}>
-                  {item.PropertyAddressFull ?? 'Unknown address'}
+                  {item.PropertyAddressFull ?? "Unknown address"}
                 </span>
                 <span style={styles.itemMeta}>
-                  ATTOM {item.ATTOM_ID ?? '—'} · Parcel {item.parcel_id ?? '—'}
+                  ATTOM {item.ATTOM_ID ?? "—"} · Parcel {item.parcel_id ?? "—"}
                 </span>
               </li>
             ))}
@@ -240,7 +131,70 @@ export function TaxAssessors() {
       </aside>
 
       {/* ── Map ── */}
-      <div ref={mapContainerRef} style={styles.map} />
+      <Map
+        ref={mapRef}
+        mapboxAccessToken={process.env.NEXT_PUBLIC_MAPBOX_TOKEN}
+        initialViewState={{
+          longitude: -74.006,
+          latitude: 40.7128,
+          zoom: 10,
+        }}
+        style={styles.map}
+        mapStyle="mapbox://styles/mapbox/dark-v11"
+      >
+        {/* ── Property markers ── */}
+        {validItems.map((item) => (
+          <Marker
+            key={item.ATTOM_ID ?? `${item.PropertyLatitude}-${item.PropertyLongitude}`}
+            longitude={item.PropertyLongitude}
+            latitude={item.PropertyLatitude}
+            anchor="center"
+            onClick={() => {
+              setSelectedId(item.ATTOM_ID);
+              setPopup(item);
+            }}
+          >
+            {/* Custom dot marker with hover highlight */}
+            <div
+              style={{
+                ...styles.markerDot,
+                background:
+                  selectedId === item.ATTOM_ID || hoveredId === item.ATTOM_ID
+                    ? "#f5d08a"
+                    : "#e8b86d",
+                transform:
+                  selectedId === item.ATTOM_ID || hoveredId === item.ATTOM_ID
+                    ? "scale(1.6)"
+                    : "scale(1)",
+              }}
+              onMouseEnter={() => setHoveredId(item.ATTOM_ID)}
+              onMouseLeave={() => setHoveredId(null)}
+            />
+          </Marker>
+        ))}
+
+        {/* ── Popup for selected marker ── */}
+        {popup &&
+          popup.PropertyLatitude !== null &&
+          popup.PropertyLongitude !== null && (
+            <Popup
+              longitude={popup.PropertyLongitude}
+              latitude={popup.PropertyLatitude}
+              anchor="top"
+              offset={16}
+              closeButton={false}
+              onClose={() => setPopup(null)}
+            >
+              <div style={styles.popupContent}>
+                <strong>{popup.PropertyAddressFull ?? "Unknown address"}</strong>
+                <br />
+                <span style={styles.popupMeta}>
+                  ATTOM ID: {popup.ATTOM_ID ?? "—"}
+                </span>
+              </div>
+            </Popup>
+          )}
+      </Map>
     </div>
   );
 }
@@ -249,80 +203,96 @@ export function TaxAssessors() {
 
 const styles: Record<string, CSSProperties> = {
   wrapper: {
-    display: 'flex',
-    height: '100vh',
-    width: '100%',
+    display: "flex",
+    height: "100vh",
+    width: "100%",
     fontFamily: "'IBM Plex Mono', monospace",
-    background: '#0f1117',
-    color: '#e8e8e8',
+    background: "#0f1117",
+    color: "#e8e8e8",
   },
   sidebar: {
-    width: '320px',
+    width: "320px",
     flexShrink: 0,
-    display: 'flex',
-    flexDirection: 'column',
-    background: '#16181f',
-    borderRight: '1px solid #2a2d38',
-    overflow: 'hidden',
+    display: "flex",
+    flexDirection: "column",
+    background: "#16181f",
+    borderRight: "1px solid #2a2d38",
+    overflow: "hidden",
   },
   sidebarHeader: {
-    display: 'flex',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    padding: '20px 20px 12px',
-    borderBottom: '1px solid #2a2d38',
+    display: "flex",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    padding: "20px 20px 12px",
+    borderBottom: "1px solid #2a2d38",
   },
   title: {
     margin: 0,
-    fontSize: '13px',
+    fontSize: "13px",
     fontWeight: 600,
-    letterSpacing: '0.1em',
-    textTransform: 'uppercase',
-    color: '#e8b86d',
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    color: "#e8b86d",
   },
   count: {
-    fontSize: '11px',
-    color: '#555',
-    letterSpacing: '0.05em',
+    fontSize: "11px",
+    color: "#555",
+    letterSpacing: "0.05em",
   },
   status: {
-    padding: '20px',
+    padding: "20px",
     margin: 0,
-    fontSize: '12px',
-    color: '#666',
+    fontSize: "12px",
+    color: "#666",
   },
   list: {
-    listStyle: 'none',
+    listStyle: "none",
     margin: 0,
     padding: 0,
-    overflowY: 'auto',
+    overflowY: "auto",
     flex: 1,
   },
   listItem: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '4px',
-    padding: '14px 20px',
-    borderBottom: '1px solid #1e2028',
-    cursor: 'pointer',
-    transition: 'background 0.1s',
+    display: "flex",
+    flexDirection: "column",
+    gap: "4px",
+    padding: "14px 20px",
+    borderBottom: "1px solid #1e2028",
+    cursor: "pointer",
+    transition: "background 0.1s",
   },
   listItemActive: {
-    background: '#1e2130',
-    borderLeft: '3px solid #e8b86d',
-    paddingLeft: '17px',
+    background: "#1e2130",
+    borderLeft: "3px solid #e8b86d",
+    paddingLeft: "17px",
   },
   itemAddress: {
-    fontSize: '12px',
-    color: '#d4d4d4',
+    fontSize: "12px",
+    color: "#d4d4d4",
     lineHeight: 1.4,
   },
   itemMeta: {
-    fontSize: '10px',
-    color: '#555',
-    letterSpacing: '0.03em',
+    fontSize: "10px",
+    color: "#555",
+    letterSpacing: "0.03em",
   },
   map: {
     flex: 1,
+  },
+  markerDot: {
+    width: "12px",
+    height: "12px",
+    borderRadius: "50%",
+    border: "2px solid #fff",
+    cursor: "pointer",
+    transition: "transform 0.15s ease, background 0.15s ease",
+  },
+  popupContent: {
+    fontFamily: "monospace",
+    fontSize: "12px",
+    padding: "4px",
+  },
+  popupMeta: {
+    color: "#888",
   },
 };

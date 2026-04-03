@@ -2,8 +2,8 @@
 
 // app/components/Map.tsx
 
-import React, { useState } from "react";
-import Map, { Marker, Popup, Source, Layer } from "react-map-gl/mapbox";
+import React, { useState, useRef } from "react";
+import Map, { Marker, Popup, Source, Layer, MapRef } from "react-map-gl/mapbox";
 import type { FillLayer, LineLayer } from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { useQuery, gql } from "@apollo/client";
@@ -41,6 +41,8 @@ const GET_TAX_ASSESSORS = gql`
 `;
 
 // ─── Parcel Layer Styles ───────────────────────────────────────────────────────
+// Dynamic fill color: highlighted (clicked) > hovered > default
+// Uses feature-state for hover/selected states
 
 const parcelFillLayer: FillLayer = {
   id: "parcels-fill",
@@ -48,8 +50,22 @@ const parcelFillLayer: FillLayer = {
   source: "parcels",
   "source-layer": "attom-parcels",
   paint: {
-    "fill-color": "#4A90D9",
-    "fill-opacity": 0.2,
+    "fill-color": [
+      "case",
+      ["boolean", ["feature-state", "selected"], false],
+      "#FF6B35", // Selected/clicked parcel - orange
+      ["boolean", ["feature-state", "hover"], false],
+      "#6BCB77", // Hovered parcel - green
+      "#4A90D9", // Default - blue
+    ],
+    "fill-opacity": [
+      "case",
+      ["boolean", ["feature-state", "selected"], false],
+      0.6,
+      ["boolean", ["feature-state", "hover"], false],
+      0.5,
+      0.2,
+    ],
   },
 };
 
@@ -59,8 +75,22 @@ const parcelLineLayer: LineLayer = {
   source: "parcels",
   "source-layer": "attom-parcels",
   paint: {
-    "line-color": "#2C6FAC",
-    "line-width": 1,
+    "line-color": [
+      "case",
+      ["boolean", ["feature-state", "selected"], false],
+      "#FF4500", // Selected parcel outline - orange-red
+      ["boolean", ["feature-state", "hover"], false],
+      "#2E8B57", // Hovered parcel outline - sea green
+      "#2C6FAC", // Default - blue
+    ],
+    "line-width": [
+      "case",
+      ["boolean", ["feature-state", "selected"], false],
+      3,
+      ["boolean", ["feature-state", "hover"], false],
+      2,
+      1,
+    ],
   },
 };
 
