@@ -9,7 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@apollo/client": "^3.14.1",
     "@types/mapbox-gl": "^3.4.1",
+    "graphql": "^16.13.2",
     "mapbox-gl": "^3.20.0",
     "next": "^16.1.6",
     "react": "19.2.3",
