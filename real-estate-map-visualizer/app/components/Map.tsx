@@ -3,11 +3,18 @@
 // app/components/Map.tsx — Week 5-6: GraphQL + Mapbox parcel integration
 
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import Map, { Source, Layer, MapRef } from "react-map-gl/mapbox";
-import type { FillLayer, LineLayer, MapMouseEvent } from "mapbox-gl";
+import Map, { Source, Layer, MapRef, Marker, NavigationControl } from "react-map-gl/mapbox";
+import type { MarkerDragEvent } from "react-map-gl/mapbox";
+import type { CircleLayer, FillLayer, LineLayer, MapMouseEvent } from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { useQuery, gql } from "@apollo/client";
+import { useQuery, useApolloClient, gql } from "@apollo/client";
 import { useRouter, useSearchParams } from "next/navigation";
+import { AlertTriangle, Building2, Camera, Loader2, MapPinned, Search, X } from "lucide-react";
+import SearchBar from "./SearchBar";
+import StreetViewDialog from "./StreetViewDialog";
+import { Badge } from "./ui/badge";
+import { Button } from "./ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +44,7 @@ interface ReonomyProperty {
   mcd_name: string | null;
   neighborhood_name: string | null;
   legal_description: string | null;
+  address_line1: string | null;
 }
 
 interface ReonomyPropertiesData {
@@ -45,7 +53,27 @@ interface ReonomyPropertiesData {
   };
 }
 
+interface ParcelByLocationData {
+  executeGetParcelByLocation: { id: string | null }[] | null;
+}
+
+interface ReonomyAddressSearchData {
+  reonomyProperties: {
+    items: { parcel_id: string | null }[];
+  };
+}
+
 // ─── GraphQL Queries ──────────────────────────────────────────────────────────
+
+function buildParcelByLocationQuery(latitude: number, longitude: number) {
+  return gql`
+    query GetParcelByLocationLiteral {
+      executeGetParcelByLocation(longitude: ${longitude}, latitude: ${latitude}) {
+        id
+      }
+    }
+  `;
+}
 
 const GET_REONOMY_PROPERTY = gql`
   query GetReonomyProperty($parcelId: String!) {
@@ -73,10 +101,25 @@ const GET_REONOMY_PROPERTY = gql`
         mcd_name
         neighborhood_name
         legal_description
+        address_line1
       }
     }
   }
 `;
+
+const GET_REONOMY_BY_ADDRESS_CITY = gql`
+  query GetReonomyByAddressCity($address: String!, $city: String!) {
+    reonomyProperties(
+      filter: { address_line1: { contains: $address }, city: { eq: $city } }
+    ) {
+      items {
+        parcel_id
+      }
+    }
+  }
+`;
+
+const initialViewState = { longitude: -100, latitude: 40, zoom: 3.5 };
 
 // ─── Parcel Layer Styles ───────────────────────────────────────────────────────
 
@@ -130,6 +173,30 @@ const parcelLineLayer: LineLayer = {
   },
 };
 
+const selectedPointLayer: CircleLayer = {
+  id: "selected-point",
+  type: "circle",
+  source: "selected-point",
+  paint: {
+    "circle-radius": 5,
+    "circle-color": "#0f172a",
+    "circle-stroke-color": "#ffffff",
+    "circle-stroke-width": 2,
+  },
+};
+
+const selectedPointPulseLayer: CircleLayer = {
+  id: "selected-point-pulse",
+  type: "circle",
+  source: "selected-point",
+  paint: {
+    "circle-radius": ["get", "pulseRadius"],
+    "circle-color": "#0284c7",
+    "circle-opacity": ["get", "pulseOpacity"],
+    "circle-stroke-width": 0,
+  },
+};
+
 // ─── Helper: Format Numbers ───────────────────────────────────────────────────
 
 function formatNumber(value: number | null): string {
@@ -148,14 +215,29 @@ function fmt(value: number | string | null | undefined, unit?: string): string {
   return unit && unit.trim() ? `${formatted} ${unit.trim()}` : formatted;
 }
 
+function getAddressSearchParts(formattedAddress: string) {
+  const [street = "", city = ""] = formattedAddress
+    .split(",")
+    .map((part) => part.trim().toUpperCase());
+  const streetTokens = street.replace(/[^\dA-Z\s]/g, " ").split(/\s+/).filter(Boolean);
+  return {
+    address: streetTokens.slice(0, 2).join(" "),
+    city,
+  };
+}
+
 // ─── Sidebar Component ────────────────────────────────────────────────────────
 
 function Sidebar({
   parcelId,
   onClose,
+  onOpenStreetView,
+  canStreetView,
 }: {
   parcelId: string | null;
   onClose: () => void;
+  onOpenStreetView: (address: string | null) => void;
+  canStreetView: boolean;
 }) {
   const { loading, error, data } = useQuery<ReonomyPropertiesData>(
     GET_REONOMY_PROPERTY,
@@ -168,72 +250,86 @@ function Sidebar({
   const property = data?.reonomyProperties?.items?.[0] ?? null;
 
   return (
-    <aside style={sidebarStyle}>
-      {/* Header */}
-      <div style={sidebarHeaderStyle}>
-        <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "#1a1a2e" }}>
-          Parcel Details
-        </h2>
-        <button onClick={onClose} style={closeBtnStyle} aria-label="Close sidebar">
-          ✕
-        </button>
+    <aside className="absolute inset-y-0 left-0 z-10 flex w-[min(360px,100%)] flex-col border-r bg-background shadow-lg md:relative md:w-[360px] md:min-w-[360px]">
+      <div className="flex items-center justify-between border-b px-4 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-accent text-accent-foreground">
+            <Building2 className="h-5 w-5" />
+          </div>
+          <div className="min-w-0">
+            <h2 className="truncate text-sm font-semibold text-foreground">Parcel Details</h2>
+            <p className="text-xs text-muted-foreground">Assessment and location data</p>
+          </div>
+        </div>
+        <Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label="Close sidebar">
+          <X className="h-4 w-4" />
+        </Button>
       </div>
 
-      {/* Parcel ID pill */}
       {parcelId && (
-        <div style={parcelIdStyle}>
-          <span style={{ fontSize: "10px", color: "#888", display: "block", marginBottom: 2 }}>
-            PARCEL ID
-          </span>
-          <span style={{ fontSize: "12px", fontFamily: "monospace", color: "#333", wordBreak: "break-all" }}>
-            {parcelId}
-          </span>
+        <div className="border-b bg-muted/40 px-4 py-3">
+          {property?.address_line1 && (
+            <div className="mb-2 truncate text-sm font-semibold text-foreground">
+              {property.address_line1}
+            </div>
+          )}
+          <Badge variant="secondary" className="mb-2">Parcel ID</Badge>
+          <div className="break-all font-mono text-xs text-muted-foreground">{parcelId}</div>
+          {canStreetView && (
+            <Button
+              type="button"
+              onClick={() => onOpenStreetView(property?.address_line1 ?? null)}
+              className="mt-3 w-full"
+              size="sm"
+            >
+              <Camera className="h-4 w-4" />
+              Open Street View
+            </Button>
+          )}
         </div>
       )}
 
-      {/* States */}
       {!parcelId && (
-        <div style={emptyStateStyle}>
-          <div style={{ fontSize: "36px", marginBottom: 12 }}>🗺️</div>
-          <p style={{ margin: 0, color: "#888", fontSize: "14px", textAlign: "center" }}>
+        <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+          <MapPinned className="mb-3 h-10 w-10 text-muted-foreground" />
+          <p className="text-sm text-muted-foreground">
             Click a parcel on the map to view its details.
           </p>
         </div>
       )}
 
       {parcelId && loading && (
-        <div style={emptyStateStyle}>
-          <div style={spinnerStyle} />
-          <p style={{ margin: "12px 0 0", color: "#888", fontSize: "13px" }}>
+        <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+          <Loader2 className="mb-3 h-8 w-8 animate-spin text-muted-foreground" />
+          <p className="text-sm text-muted-foreground">
             Fetching property data…
           </p>
         </div>
       )}
 
       {parcelId && error && (
-        <div style={{ ...emptyStateStyle, gap: 8 }}>
-          <div style={{ fontSize: "28px" }}>⚠️</div>
-          <p style={{ margin: 0, color: "#c0392b", fontSize: "13px", textAlign: "center" }}>
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+          <AlertTriangle className="h-8 w-8 text-destructive" />
+          <p className="text-sm font-medium text-destructive">
             Failed to load property data.
           </p>
-          <p style={{ margin: 0, color: "#999", fontSize: "11px", textAlign: "center" }}>
+          <p className="text-xs text-muted-foreground">
             {error.message}
           </p>
         </div>
       )}
 
       {parcelId && !loading && !error && !property && (
-        <div style={emptyStateStyle}>
-          <div style={{ fontSize: "28px" }}>🔍</div>
-          <p style={{ margin: 0, color: "#888", fontSize: "13px", textAlign: "center" }}>
+        <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+          <Search className="mb-3 h-8 w-8 text-muted-foreground" />
+          <p className="text-sm text-muted-foreground">
             No property record found for this parcel.
           </p>
         </div>
       )}
 
       {property && (
-        <div style={{ overflowY: "auto", flex: 1 }}>
-          {/* Building */}
+        <div className="flex-1 overflow-y-auto p-3">
           <Section title="Building">
             <Row label="Year Built" value={fmt(property.year_built)} />
             <Row label="Year Renovated" value={fmt(property.year_renovated)} />
@@ -246,7 +342,6 @@ function Sidebar({
             <Row label="Building Area" value={fmt(property.building_area, "sf")} />
           </Section>
 
-          {/* Lot */}
           <Section title="Lot">
             <Row label="Property Type" value={fmt(property.asset_type)} />
             <Row label="Lot Area SF" value={fmt(property.lot_size_sqft, "sf")} />
@@ -256,7 +351,6 @@ function Sidebar({
             <Row label="Opportunity Zone" value={formatBoolean(property.opp_zone)} />
           </Section>
 
-          {/* Location */}
           <Section title="Location">
             <Row label="Metropolitan Statistical Area" value={fmt(property.msa_name)} />
             <Row label="County" value={fmt(property.fips_county)} />
@@ -265,7 +359,6 @@ function Sidebar({
             <Row label="Neighborhood" value={fmt(property.neighborhood_name)} />
             <Row label="Legal" value={fmt(property.legal_description)} />
           </Section>
-
         </div>
       )}
     </aside>
@@ -274,19 +367,60 @@ function Sidebar({
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div style={{ marginBottom: 0 }}>
-      <div style={sectionHeaderStyle}>{title}</div>
-      <div style={{ padding: "0 16px" }}>{children}</div>
-    </div>
+    <Card className="mb-3 overflow-hidden">
+      <CardHeader className="border-b bg-muted/30 px-4 py-3">
+        <CardTitle>{title}</CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">{children}</CardContent>
+    </Card>
   );
 }
 
 function Row({ label, value }: { label: string; value: string | null | undefined }) {
   return (
-    <div style={rowStyle}>
-      <span style={rowLabelStyle}>{label}</span>
-      <span style={rowValueStyle}>{value ?? "—"}</span>
+    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3 border-b px-4 py-2.5 text-sm last:border-b-0">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="break-words text-right font-medium text-foreground">{value ?? "—"}</span>
     </div>
+  );
+}
+
+function SelectionSummary({
+  address,
+  parcelId,
+  coords,
+}: {
+  address: string | null;
+  parcelId: string | null;
+  coords: { lat: number; lng: number } | null;
+}) {
+  const { loading, data } = useQuery<ReonomyPropertiesData>(
+    GET_REONOMY_PROPERTY,
+    {
+      variables: { parcelId },
+      skip: !parcelId || Boolean(address),
+    },
+  );
+  const propertyAddress = data?.reonomyProperties?.items?.[0]?.address_line1 ?? null;
+  const displayAddress =
+    address ?? propertyAddress ?? (loading ? "Loading address..." : coords ? "Address unavailable" : "—");
+
+  if (!parcelId && !coords && !address) return null;
+
+  return (
+    <Card className="absolute right-3 top-3 z-20 hidden w-[min(420px,calc(100%-24px))] overflow-hidden bg-background/95 shadow-lg backdrop-blur lg:block">
+      <CardHeader className="border-b bg-muted/30 px-4 py-3">
+        <CardTitle>Active Parcel</CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        <Row label="Address" value={displayAddress} />
+        <Row label="Parcel ID" value={parcelId ?? "—"} />
+        <Row
+          label="Coordinates"
+          value={coords ? `${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}` : "—"}
+        />
+      </CardContent>
+    </Card>
   );
 }
 
@@ -295,8 +429,17 @@ function Row({ label, value }: { label: string; value: string | null | undefined
 export default function MapComponent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const apolloClient = useApolloClient();
   const parcelFromUrl = searchParams.get("parcel");
-  const [pendingParcelId, setSelectedParcelId] = useState<string | null>(parcelFromUrl);
+  const [pendingParcelId, setSelectedParcelId] = useState<string | null>(null);
+  const [selectionCoords, setSelectionCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [selectedAddress, setSelectedAddress] = useState<string | null>(null);
+  const [streetViewOpen, setStreetViewOpen] = useState(false);
+  const [streetViewAddress, setStreetViewAddress] = useState<string | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchResetSignal, setSearchResetSignal] = useState(0);
+  const [pulseFrame, setPulseFrame] = useState(0);
 
   const mapRef = useRef<MapRef>(null);
   const hoveredFeatureRef = useRef<{ id: string | number; source: string; sourceLayer: string } | null>(null);
@@ -315,8 +458,30 @@ export default function MapComponent() {
     lastSyncedParcelRef.current = parcelFromUrl;
   }, [parcelFromUrl]);
 
-  const activeParcelId = pendingParcelId ?? parcelFromUrl;
+  const activeParcelId = pendingParcelId;
   const sidebarOpen = activeParcelId !== null;
+
+  const selectedPointGeoJson = useMemo(
+    () => ({
+      type: "FeatureCollection" as const,
+      features: selectionCoords
+        ? [
+            {
+              type: "Feature" as const,
+              properties: {
+                pulseRadius: 12 + pulseFrame * 18,
+                pulseOpacity: Math.max(0, 0.32 - pulseFrame * 0.28),
+              },
+              geometry: {
+                type: "Point" as const,
+                coordinates: [selectionCoords.lng, selectionCoords.lat],
+              },
+            },
+          ]
+        : [],
+    }),
+    [pulseFrame, selectionCoords],
+  );
 
   useEffect(() => {
     if (activeParcelId === lastSyncedParcelRef.current) return;
@@ -332,6 +497,14 @@ export default function MapComponent() {
     const nextQuery = params.toString();
     router.replace(nextQuery ? `?${nextQuery}` : "?", { scroll: false });
   }, [router, searchParams, activeParcelId]);
+
+  useEffect(() => {
+    if (!selectionCoords) return;
+    const animation = window.setInterval(() => {
+      setPulseFrame((frame) => (frame + 0.04) % 1);
+    }, 50);
+    return () => window.clearInterval(animation);
+  }, [selectionCoords]);
   // ── Feature-state helpers ──────────────────────────────────────────────────
 
   const clearHover = useCallback(() => {
@@ -357,23 +530,34 @@ export default function MapComponent() {
     const map = mapRef.current?.getMap();
     if (!map) return;
 
-    const features = map.querySourceFeatures("parcels", {
-      sourceLayer: selectionFeatureRef.sourceLayer,
-      filter: ["==", ["to-string", ["get", "ID"]], parcelFromUrl],
-    });
-    const feature = features[0];
-    if (feature?.id === undefined) return;
-
-    if (selectedFeatureRef.current?.id === feature.id) return;
-
-    clearSelected();
-
-    const featureRef = {
-      ...selectionFeatureRef,
-      id: feature.id,
+    const trySelect = () => {
+      const features = map.querySourceFeatures("parcels", {
+        sourceLayer: selectionFeatureRef.sourceLayer,
+        filter: ["==", ["to-string", ["get", "ID"]], parcelFromUrl],
+      });
+      const feature = features[0];
+      if (feature?.id === undefined) return false;
+      if (selectedFeatureRef.current?.id === feature.id) return true;
+      clearSelected();
+      const featureRef = { ...selectionFeatureRef, id: feature.id };
+      map.setFeatureState(featureRef, { selected: true });
+      selectedFeatureRef.current = featureRef;
+      return true;
     };
-    map.setFeatureState(featureRef, { selected: true });
-    selectedFeatureRef.current = featureRef;
+
+    if (trySelect()) return;
+
+    // Tiles may not be loaded yet (e.g. after search flyTo). Retry on tile loads.
+    const onSourceData = (e: { sourceId?: string; isSourceLoaded?: boolean }) => {
+      if (e.sourceId !== "parcels" || !e.isSourceLoaded) return;
+      if (trySelect()) {
+        map.off("sourcedata", onSourceData);
+      }
+    };
+    map.on("sourcedata", onSourceData);
+    return () => {
+      map.off("sourcedata", onSourceData);
+    };
   }, [clearSelected, parcelFromUrl, selectionFeatureRef]);
 
   // ── Mouse move: hover highlighting ────────────────────────────────────────
@@ -438,6 +622,8 @@ export default function MapComponent() {
         // Clicked empty area — deselect
         clearSelected();
         setSelectedParcelId(null);
+        setSelectionCoords(null);
+        setSelectedAddress(null);
         return;
       }
 
@@ -449,8 +635,13 @@ export default function MapComponent() {
       if (!parcelId) {
         clearSelected();
         setSelectedParcelId(null);
+        setSelectionCoords(null);
+        setSelectedAddress(null);
         return;
       }
+
+      setSelectionCoords({ lat: event.lngLat.lat, lng: event.lngLat.lng });
+      setSelectedAddress(null);
 
       // Clear previous selected state
       clearSelected();
@@ -474,21 +665,164 @@ export default function MapComponent() {
   const handleSidebarClose = useCallback(() => {
     clearSelected();
     setSelectedParcelId(null);
+    setSelectionCoords(null);
+    setSelectedAddress(null);
   }, [clearSelected]);
 
+  const resetMap = useCallback(() => {
+    clearHover();
+    clearSelected();
+    setSelectedParcelId(null);
+    setSelectionCoords(null);
+    setSelectedAddress(null);
+    setSearchError(null);
+    setSearchLoading(false);
+    setStreetViewOpen(false);
+    setStreetViewAddress(null);
+    setSearchResetSignal((signal) => signal + 1);
+    mapRef.current?.flyTo({ ...initialViewState, essential: true });
+  }, [clearHover, clearSelected]);
+
+  useEffect(() => {
+    window.addEventListener("real-estate-map:reset", resetMap);
+    return () => {
+      window.removeEventListener("real-estate-map:reset", resetMap);
+    };
+  }, [resetMap]);
+
+  // ── Search: Google Places → parcel-by-location → highlight ───────────────
+  const handleSearchResult = useCallback(
+    async ({
+      latitude,
+      longitude,
+      formattedAddress,
+    }: {
+      latitude: number;
+      longitude: number;
+      formattedAddress: string;
+    }) => {
+      const map = mapRef.current?.getMap();
+      if (map) {
+        map.flyTo({ center: [longitude, latitude], zoom: 18, essential: true });
+      }
+      setSelectionCoords({ lat: latitude, lng: longitude });
+      setSelectedAddress(formattedAddress);
+      setSearchError(null);
+      setSearchLoading(true);
+      try {
+        const { data } = await apolloClient.query<ParcelByLocationData>({
+          query: buildParcelByLocationQuery(latitude, longitude),
+          fetchPolicy: "network-only",
+        });
+        const parcelId = data?.executeGetParcelByLocation?.[0]?.id ?? null;
+        if (!parcelId) {
+          setSearchError(`No parcel found at "${formattedAddress}".`);
+          clearSelected();
+          setSelectedParcelId(null);
+          setSelectedAddress(null);
+          return;
+        }
+
+        const { data: directPropertyData } = await apolloClient.query<ReonomyPropertiesData>({
+          query: GET_REONOMY_PROPERTY,
+          variables: { parcelId },
+          fetchPolicy: "network-only",
+        });
+        let reonomyParcelId = directPropertyData.reonomyProperties.items[0]?.parcel_id ?? null;
+
+        if (!reonomyParcelId) {
+          const addressParts = getAddressSearchParts(formattedAddress);
+          if (addressParts.address && addressParts.city) {
+            const { data: addressPropertyData } =
+              await apolloClient.query<ReonomyAddressSearchData>({
+                query: GET_REONOMY_BY_ADDRESS_CITY,
+                variables: addressParts,
+                fetchPolicy: "network-only",
+              });
+            reonomyParcelId =
+              addressPropertyData.reonomyProperties.items.find((item) => item.parcel_id)
+                ?.parcel_id ?? null;
+          }
+        }
+
+        clearSelected();
+        setSelectedParcelId(reonomyParcelId ?? String(parcelId));
+      } catch (err) {
+        setSearchError(err instanceof Error ? err.message : "Parcel lookup failed");
+      } finally {
+        setSearchLoading(false);
+      }
+    },
+    [apolloClient, clearSelected],
+  );
+
+  const handleMarkerDragEnd = useCallback(
+    async (event: MarkerDragEvent) => {
+      const { lngLat } = event;
+      setSelectionCoords({ lat: lngLat.lat, lng: lngLat.lng });
+      setSelectedAddress(null);
+      setSearchError(null);
+      setSearchLoading(true);
+
+      try {
+        const { data } = await apolloClient.query<ParcelByLocationData>({
+          query: buildParcelByLocationQuery(lngLat.lat, lngLat.lng),
+          fetchPolicy: "network-only",
+        });
+        const parcelId = data?.executeGetParcelByLocation?.[0]?.id ?? null;
+        if (!parcelId) {
+          setSearchError("No parcel found at the dropped pin.");
+          clearSelected();
+          setSelectedParcelId(null);
+          setSelectedAddress(null);
+          return;
+        }
+
+        clearSelected();
+        setSelectedParcelId(String(parcelId));
+      } catch (err) {
+        setSearchError(err instanceof Error ? err.message : "Parcel lookup failed");
+      } finally {
+        setSearchLoading(false);
+      }
+    },
+    [apolloClient, clearSelected],
+  );
+
+  const handleOpenStreetView = useCallback((address: string | null) => {
+    setStreetViewAddress(address);
+    setStreetViewOpen(true);
+  }, []);
+
   return (
-    <div style={{ display: "flex", width: "100%", height: "calc(100vh - 64px)" }}>
+    <div className="flex h-[calc(100vh-64px)] w-full bg-background">
       {/* ── Sidebar ─────────────────────────────────────────────────────────── */}
       {sidebarOpen && (
-        <Sidebar parcelId={activeParcelId} onClose={handleSidebarClose} />
+        <Sidebar
+          parcelId={activeParcelId}
+          onClose={handleSidebarClose}
+          onOpenStreetView={handleOpenStreetView}
+          canStreetView={selectionCoords !== null}
+        />
       )}
 
       {/* ── Map ─────────────────────────────────────────────────────────────── */}
-      <div style={{ flex: 1, position: "relative" }}>
+      <div className="relative min-w-0 flex-1">
+        <SearchBar
+          onResult={handleSearchResult}
+          loading={searchLoading}
+          error={searchError}
+          resetSignal={searchResetSignal}
+        />
+        <SelectionSummary
+          address={selectedAddress}
+          parcelId={activeParcelId}
+          coords={selectionCoords}
+        />
         <Map
           ref={mapRef}
           mapboxAccessToken={process.env.NEXT_PUBLIC_MAPBOX_TOKEN}
-          initialViewState={{ longitude: -100, latitude: 40, zoom: 3.5 }}
+          initialViewState={initialViewState}
           style={{ width: "100%", height: "100%" }}
           mapStyle="mapbox://styles/mapbox/streets-v11"
           interactiveLayerIds={["parcels-fill", "parcels-line"]}
@@ -516,6 +850,8 @@ export default function MapComponent() {
           onMouseLeave={handleMouseLeave}
           onClick={handleClick}
         >
+          <NavigationControl position="top-right" showCompass visualizePitch />
+
           {/* Parcel boundaries vector tile source */}
           <Source
             id="parcels"
@@ -525,123 +861,47 @@ export default function MapComponent() {
             <Layer {...parcelFillLayer} />
             <Layer {...parcelLineLayer} />
           </Source>
+
+          {selectionCoords && (
+            <Source id="selected-point" type="geojson" data={selectedPointGeoJson}>
+              <Layer {...selectedPointPulseLayer} />
+              <Layer {...selectedPointLayer} />
+            </Source>
+          )}
+
+          {selectionCoords && (
+            <Marker
+              longitude={selectionCoords.lng}
+              latitude={selectionCoords.lat}
+              anchor="bottom"
+              draggable
+              onDragEnd={handleMarkerDragEnd}
+            >
+              <div className="flex translate-y-1 flex-col items-center">
+                <div className="flex h-9 w-9 items-center justify-center rounded-full border-2 border-background bg-primary text-primary-foreground shadow-lg">
+                  <MapPinned className="h-5 w-5" />
+                </div>
+                <div className="h-3 w-3 -translate-y-1 rotate-45 border-b-2 border-r-2 border-background bg-primary shadow-sm" />
+              </div>
+            </Marker>
+          )}
         </Map>
 
         {/* Hint text when sidebar is closed */}
         {!sidebarOpen && (
-          <div style={hintStyle}>
-            Click a parcel to view details
+          <div className="pointer-events-none absolute bottom-6 left-1/2 max-w-[calc(100%-24px)] -translate-x-1/2 whitespace-nowrap rounded-full border bg-background/90 px-4 py-2 text-xs font-medium text-foreground shadow-lg backdrop-blur">
+            Search an address or click a parcel to view details
           </div>
         )}
       </div>
+
+      <StreetViewDialog
+        open={streetViewOpen}
+        onClose={() => setStreetViewOpen(false)}
+        latitude={selectionCoords?.lat ?? null}
+        longitude={selectionCoords?.lng ?? null}
+        address={streetViewAddress}
+      />
     </div>
   );
 }
-
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
-const sidebarStyle: React.CSSProperties = {
-  width: "340px",
-  minWidth: "340px",
-  height: "100%",
-  background: "#f9f9fb",
-  borderRight: "1px solid #e0e0e8",
-  display: "flex",
-  flexDirection: "column",
-  overflowY: "hidden",
-  boxShadow: "2px 0 8px rgba(0,0,0,0.06)",
-  zIndex: 10,
-};
-
-const sidebarHeaderStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  padding: "16px 16px 12px",
-  borderBottom: "1px solid #e0e0e8",
-  background: "#fff",
-  flexShrink: 0,
-};
-
-const closeBtnStyle: React.CSSProperties = {
-  background: "none",
-  border: "none",
-  cursor: "pointer",
-  fontSize: "16px",
-  color: "#888",
-  padding: "4px 6px",
-  borderRadius: "4px",
-  lineHeight: 1,
-};
-
-const parcelIdStyle: React.CSSProperties = {
-  padding: "10px 16px",
-  background: "#eef1f7",
-  borderBottom: "1px solid #e0e0e8",
-  flexShrink: 0,
-};
-
-const emptyStateStyle: React.CSSProperties = {
-  flex: 1,
-  display: "flex",
-  flexDirection: "column",
-  alignItems: "center",
-  justifyContent: "center",
-  padding: "24px 20px",
-};
-
-const spinnerStyle: React.CSSProperties = {
-  width: "32px",
-  height: "32px",
-  border: "3px solid #e0e0e8",
-  borderTop: "3px solid #4A90D9",
-  borderRadius: "50%",
-  animation: "spin 0.8s linear infinite",
-};
-
-const sectionHeaderStyle: React.CSSProperties = {
-  fontSize: "10px",
-  fontWeight: 700,
-  letterSpacing: "0.08em",
-  textTransform: "uppercase",
-  color: "#888",
-  padding: "12px 16px 6px",
-  background: "#f9f9fb",
-};
-
-const rowStyle: React.CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "flex-start",
-  gap: 8,
-  padding: "7px 0",
-  borderBottom: "1px solid #f0f0f4",
-  fontSize: "13px",
-};
-
-const rowLabelStyle: React.CSSProperties = {
-  color: "#777",
-  flexShrink: 0,
-  maxWidth: "45%",
-};
-
-const rowValueStyle: React.CSSProperties = {
-  color: "#1a1a2e",
-  fontWeight: 500,
-  textAlign: "right",
-  wordBreak: "break-word",
-};
-
-const hintStyle: React.CSSProperties = {
-  position: "absolute",
-  bottom: 24,
-  left: "50%",
-  transform: "translateX(-50%)",
-  background: "rgba(0,0,0,0.65)",
-  color: "#fff",
-  padding: "8px 16px",
-  borderRadius: "20px",
-  fontSize: "13px",
-  pointerEvents: "none",
-  whiteSpace: "nowrap",
-};
