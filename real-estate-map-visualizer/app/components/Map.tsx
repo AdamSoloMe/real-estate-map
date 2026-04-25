@@ -9,7 +9,18 @@ import type { CircleLayer, FillLayer, LineLayer, MapMouseEvent } from "mapbox-gl
 import "mapbox-gl/dist/mapbox-gl.css";
 import { useQuery, useApolloClient, gql } from "@apollo/client";
 import { useRouter, useSearchParams } from "next/navigation";
-import { AlertTriangle, Building2, Camera, Loader2, MapPinned, Search, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Building2,
+  Camera,
+  ChevronDown,
+  Loader2,
+  MapPinned,
+  RotateCcw,
+  RotateCw,
+  Search,
+  X,
+} from "lucide-react";
 import SearchBar from "./SearchBar";
 import StreetViewDialog from "./StreetViewDialog";
 import { Badge } from "./ui/badge";
@@ -440,8 +451,10 @@ export default function MapComponent() {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchResetSignal, setSearchResetSignal] = useState(0);
   const [pulseFrame, setPulseFrame] = useState(0);
+  const [rotationMenuOpen, setRotationMenuOpen] = useState(false);
 
   const mapRef = useRef<MapRef>(null);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
   const hoveredFeatureRef = useRef<{ id: string | number; source: string; sourceLayer: string } | null>(null);
   const selectedFeatureRef = useRef<{ id: string | number; source: string; sourceLayer: string } | null>(null);
   const lastSyncedParcelRef = useRef<string | null>(parcelFromUrl);
@@ -505,6 +518,42 @@ export default function MapComponent() {
     }, 50);
     return () => window.clearInterval(animation);
   }, [selectionCoords]);
+
+  useEffect(() => {
+    const container = mapContainerRef.current;
+    if (!container) return;
+
+    const handleTrackpadRotate = (event: WheelEvent) => {
+      if (!event.shiftKey) return;
+
+      const map = mapRef.current?.getMap();
+      if (!map) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const dominantDelta =
+        Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      if (dominantDelta === 0) return;
+
+      map.rotateTo(map.getBearing() + dominantDelta * 0.35, {
+        duration: 0,
+        essential: true,
+      });
+    };
+
+    container.addEventListener("wheel", handleTrackpadRotate, {
+      capture: true,
+      passive: false,
+    });
+
+    return () => {
+      container.removeEventListener("wheel", handleTrackpadRotate, {
+        capture: true,
+      });
+    };
+  }, []);
+
   // ── Feature-state helpers ──────────────────────────────────────────────────
 
   const clearHover = useCallback(() => {
@@ -794,6 +843,25 @@ export default function MapComponent() {
     setStreetViewOpen(true);
   }, []);
 
+  const rotateMap = useCallback((degrees: number) => {
+    const map = mapRef.current?.getMap();
+    if (!map) return;
+    map.easeTo({
+      bearing: map.getBearing() + degrees,
+      duration: 350,
+      essential: true,
+    });
+  }, []);
+
+  const resetRotation = useCallback(() => {
+    mapRef.current?.getMap().easeTo({
+      bearing: 0,
+      pitch: 0,
+      duration: 350,
+      essential: true,
+    });
+  }, []);
+
   return (
     <div className="flex h-[calc(100vh-64px)] w-full bg-background">
       {/* ── Sidebar ─────────────────────────────────────────────────────────── */}
@@ -807,7 +875,7 @@ export default function MapComponent() {
       )}
 
       {/* ── Map ─────────────────────────────────────────────────────────────── */}
-      <div className="relative min-w-0 flex-1">
+      <div ref={mapContainerRef} className="relative min-w-0 flex-1">
         <SearchBar
           onResult={handleSearchResult}
           loading={searchLoading}
@@ -819,6 +887,68 @@ export default function MapComponent() {
           parcelId={activeParcelId}
           coords={selectionCoords}
         />
+        <div className="absolute bottom-20 right-3 z-20 flex flex-col gap-2 rounded-lg border bg-background/95 p-2 shadow-lg backdrop-blur">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setRotationMenuOpen((open) => !open)}
+            aria-expanded={rotationMenuOpen}
+            aria-controls="map-rotation-menu"
+            className="w-36 justify-between"
+          >
+            <span className="inline-flex items-center gap-2">
+              <RotateCw className="h-4 w-4" />
+              Rotation
+            </span>
+            <ChevronDown
+              className={`h-4 w-4 transition-transform ${rotationMenuOpen ? "rotate-180" : ""}`}
+            />
+          </Button>
+          {rotationMenuOpen && (
+            <div id="map-rotation-menu" className="flex flex-col gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => rotateMap(-15)}
+                aria-label="Rotate map left"
+                title="Rotate map left"
+                className="w-36 justify-start"
+              >
+                <RotateCcw className="h-4 w-4" />
+                Rotate left
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => rotateMap(15)}
+                aria-label="Rotate map right"
+                title="Rotate map right"
+                className="w-36 justify-start"
+              >
+                <RotateCw className="h-4 w-4" />
+                Rotate right
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={resetRotation}
+                aria-label="Reset map rotation"
+                title="Reset map rotation"
+                className="w-36 justify-start"
+              >
+                <MapPinned className="h-4 w-4" />
+                Reset north
+              </Button>
+              <div className="w-36 border-t pt-2 text-center text-[10px] leading-snug text-muted-foreground">
+                Use buttons, compass,two fingers on track pad or right click on mouse
+              </div>
+            </div>
+          )}
+        </div>
         <Map
           ref={mapRef}
           mapboxAccessToken={process.env.NEXT_PUBLIC_MAPBOX_TOKEN}
@@ -826,6 +956,9 @@ export default function MapComponent() {
           style={{ width: "100%", height: "100%" }}
           mapStyle="mapbox://styles/mapbox/streets-v11"
           interactiveLayerIds={["parcels-fill", "parcels-line"]}
+          dragRotate
+          touchPitch
+          touchZoomRotate
           onLoad={() => {
             if (!parcelFromUrl) return;
 
