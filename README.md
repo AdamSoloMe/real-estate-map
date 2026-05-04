@@ -8,7 +8,7 @@ The current coverage is focused on New York City.
 
 ## Demo
 
-Public build: [view Project here](real-estate-map-dun.vercel.app)
+Public build: [click to view Project here](https://real-estate-map-dun.vercel.app)
 
 Screenshots:
 
