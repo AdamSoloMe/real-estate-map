@@ -22,7 +22,7 @@ Screenshots:
 - Added Google Places address search so users can quickly locate NYC properties.
 - Connected the frontend to a GraphQL property API with Apollo Client.
 - Built a parcel details sidebar that displays building, lot, and location data.
-- Added Street View access for selected parcels so users can inspect a location visually.
+- Added Street View access for selected parcels so users can inspect a location visually. ( this is currently disabled within due to api costs)
 - Added custom map interactions, including hover states, selected parcel states, draggable markers, animated GeoJSON layers, and map rotation controls.
 - Refreshed the interface with Tailwind CSS and shadcn-style UI components.
 - Deployed-ready configuration with environment variable documentation for Vercel.
